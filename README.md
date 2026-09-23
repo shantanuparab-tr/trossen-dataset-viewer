@@ -26,8 +26,11 @@ Docker install: Docker Engine 24+ with the Compose plugin. Nothing else.
 
 Native install: ffmpeg on `PATH`, Python 3.10+, and [Bun](https://bun.sh) 1.x.
 
-Disk: the preview cache holds transcoded clips, roughly 2 MB per depth episode
-and per MCAP camera topic. A few hundred MB covers a large review pass.
+Disk: the preview cache holds transcoded clips, capped at 5 GB and pruned
+least-recently-viewed first (`VIZ_CACHE_MAX_GB`). Clips are encoded for a review
+tile, 360p at 15 fps, which is about a tenth the size of the source; raise
+`VIZ_PREVIEW_HEIGHT`, `VIZ_PREVIEW_FPS` or lower `VIZ_PREVIEW_CRF` for more
+detail at proportionally more disk.
 
 ## Install
 

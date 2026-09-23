@@ -17,6 +17,11 @@ Two extras on top of plain file serving:
   before anything is converted. Messages are counted, never decoded.
 * `GET /api/tools` lists the checks in tools/, and `GET /api/tools/run` runs one
   against a dataset or recording and returns what it printed.
+Preview clips are written to the depth cache, capped at `VIZ_CACHE_MAX_GB`
+(5 GB by default, least recently read dropped first) and encoded for a review
+tile rather than for archive: `VIZ_PREVIEW_HEIGHT`, `VIZ_PREVIEW_FPS` and
+`VIZ_PREVIEW_CRF` change that.
+
 * `GET /api/roots`, `GET /api/roots/add?path=<abs>` and
   `GET /api/roots/remove?path=<abs>` list and change the directories datasets
   are served from, without a restart. `/api/mcap/roots{,/add,/remove}` does the
@@ -78,6 +83,31 @@ DEPTH_LOCKS = {}            # cache key -> lock, so one transcode runs per clip
 # finely than a brightness ramp. `turbo` is the perceptually even rainbow, so
 # close reads red and far reads blue. Part of every depth cache key, so changing
 # it re-renders instead of serving the previous colors.
+# Previews are watched in a tile a few hundred pixels wide, so they are encoded
+# for that and not for archival: a smaller frame, a lower rate and a looser
+# quantizer cut a clip to roughly a tenth, which is disk on this machine and
+# read time off the NAS. VIZ_PREVIEW_* override any of it.
+PREVIEW_MAX_HEIGHT = int(os.environ.get("VIZ_PREVIEW_HEIGHT", "360"))
+PREVIEW_MAX_FPS = float(os.environ.get("VIZ_PREVIEW_FPS", "15"))
+PREVIEW_CRF = os.environ.get("VIZ_PREVIEW_CRF", "28")
+
+# Total size the transcoded previews may occupy. The least recently read clips
+# are dropped once a new one takes the directory over it, so a review pass over
+# a large dataset cannot fill the disk; a dropped clip is rebuilt on demand.
+CACHE_MAX_BYTES = int(float(os.environ.get("VIZ_CACHE_MAX_GB", "5")) * 1e9)
+
+# Part of every cache key, so changing the encode settings rebuilds the clips
+# instead of serving the ones the previous settings produced.
+PREVIEW_PROFILE = "h%sf%sq%s" % (
+    PREVIEW_MAX_HEIGHT, PREVIEW_MAX_FPS, PREVIEW_CRF,
+)
+
+# Scale to PREVIEW_MAX_HEIGHT, leaving anything already smaller alone, and keep
+# the width even because H.264 in yuv420p cannot encode an odd one.
+PREVIEW_SCALE_FILTER = (
+    "scale=-2:'min(%d,ih)':flags=bilinear" % PREVIEW_MAX_HEIGHT
+)
+
 DEPTH_COLORMAP = "turbo"
 
 # pseudocolor writes color into the frame it is given, so the gray frame has to
@@ -90,6 +120,50 @@ DEPTH_COLORMAP_FILTERS = ["format=gbrp", "pseudocolor=preset=%s" % DEPTH_COLORMA
 DEPTH_FILTERS = ["format=gray", "normalize"] + DEPTH_COLORMAP_FILTERS
 
 
+def preview_encode_args(filters, fps=None):
+    """The ffmpeg output arguments every preview clip is written with.
+
+    @param filters Filters the caller needs applied before the common scaling.
+    @param fps Source rate, when it is known; the clip is capped at
+        PREVIEW_MAX_FPS and left alone when it is already slower.
+    """
+    chain = list(filters) + [PREVIEW_SCALE_FILTER]
+    if fps is None or fps > PREVIEW_MAX_FPS:
+        chain.append("fps=%g" % PREVIEW_MAX_FPS)
+    return [
+        "-vf", ",".join(chain),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", PREVIEW_CRF,
+        "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    ]
+
+
+def evict_preview_cache():
+    """Drop the least recently read clips until the cache is under its budget.
+
+    Read time, not write time: a clip someone keeps coming back to survives,
+    while one built for an episode reviewed once goes first.
+    """
+    if DEPTH_CACHE is None or CACHE_MAX_BYTES <= 0:
+        return
+    try:
+        clips = [(p.stat(), p) for p in DEPTH_CACHE.glob("*.mp4")]
+    except OSError:
+        return
+    total = sum(stat.st_size for stat, _ in clips)
+    if total <= CACHE_MAX_BYTES:
+        return
+    clips.sort(key=lambda entry: entry[0].st_atime)
+    for stat, path in clips:
+        if total <= CACHE_MAX_BYTES:
+            break
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= stat.st_size
+        print("preview cache: dropped %s" % path.name)
+
+
 def depth_preview(source, start, end):
     """Return an 8-bit H.264 clip of source[start:end], transcoding if needed.
 
@@ -98,7 +172,8 @@ def depth_preview(source, start, end):
     normalized colormap band computed from the 12-bit stats still applies.
     """
     key = hashlib.sha1(
-        ("%s|%.3f|%.3f|%s" % (source, start, end, DEPTH_COLORMAP)).encode()
+        ("%s|%.3f|%.3f|%s|%s"
+         % (source, start, end, DEPTH_COLORMAP, PREVIEW_PROFILE)).encode()
     ).hexdigest()
     out = DEPTH_CACHE / ("%s.mp4" % key)
 
@@ -112,10 +187,9 @@ def depth_preview(source, start, end):
             "ffmpeg", "-nostdin", "-y", "-loglevel", "error",
             "-ss", "%.3f" % start, "-t", "%.3f" % max(end - start, 0.04),
             "-i", str(source),
-            "-an", "-vf", ",".join(["format=gray"] + DEPTH_COLORMAP_FILTERS),
-            "-pix_fmt", "yuv420p",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-movflags", "+faststart", str(tmp),
+            "-an",
+        ] + preview_encode_args(["format=gray"] + DEPTH_COLORMAP_FILTERS) + [
+            str(tmp),
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True)
@@ -125,6 +199,7 @@ def depth_preview(source, start, end):
             print("depth preview failed for %s: %s" % (source, detail.decode()[:400]))
             return None
         tmp.replace(out)
+        evict_preview_cache()
         return out
 
 
@@ -307,7 +382,9 @@ def mcap_preview(path, topic):
 
     stat = path.stat()
     key = hashlib.sha1(
-        ("%s|%d|%s|%s" % (path, stat.st_mtime_ns, topic, DEPTH_COLORMAP)).encode()
+        ("%s|%d|%s|%s|%s"
+         % (path, stat.st_mtime_ns, topic, DEPTH_COLORMAP,
+            PREVIEW_PROFILE)).encode()
     ).hexdigest()
     out = DEPTH_CACHE / ("mcap-%s.mp4" % key)
 
@@ -353,10 +430,8 @@ def mcap_preview(path, topic):
                         proc = subprocess.Popen(
                             ["ffmpeg", "-nostdin", "-y", "-loglevel", "error",
                              "-f", demuxer, "-r", "%.4f" % fps, "-i", "-", "-an"]
-                            + (["-vf", ",".join(filters)] if filters else [])
-                            + ["-c:v", "libx264", "-preset", "veryfast",
-                               "-crf", "20", "-pix_fmt", "yuv420p",
-                               "-movflags", "+faststart", str(tmp)],
+                            + preview_encode_args(filters, fps)
+                            + [str(tmp)],
                             stdin=subprocess.PIPE,
                         )
                     elif proc is None:
@@ -374,10 +449,8 @@ def mcap_preview(path, topic):
                              "-f", "rawvideo", "-pix_fmt", pix_fmt,
                              "-s", "%dx%d" % (msg.width, msg.height),
                              "-r", "%.4f" % fps, "-i", "-", "-an"]
-                            + (["-vf", ",".join(filters)] if filters else [])
-                            + ["-c:v", "libx264", "-preset", "veryfast",
-                               "-crf", "20", "-pix_fmt", "yuv420p",
-                               "-movflags", "+faststart", str(tmp)],
+                            + preview_encode_args(filters, fps)
+                            + [str(tmp)],
                             stdin=subprocess.PIPE,
                         )
                     proc.stdin.write(msg.data)
@@ -398,6 +471,7 @@ def mcap_preview(path, topic):
             tmp.unlink(missing_ok=True)
             return None
         tmp.replace(out)
+        evict_preview_cache()
         return out
 
 
