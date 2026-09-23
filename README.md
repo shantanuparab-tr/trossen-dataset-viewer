@@ -31,12 +31,17 @@ and per MCAP camera topic. A few hundred MB covers a large review pass.
 
 ## Install
 
-Unpack the folder and run the installer. It asks where your data is, writes
-`.env`, then builds and starts everything:
+Clone and run the installer. It asks where your data is, writes `.env`, then
+builds and starts everything:
 
 ```bash
+git clone https://github.com/shantanuparab-tr/trossen-dataset-viewer.git
+cd trossen-dataset-viewer
 ./install.sh
 ```
+
+The same installer runs from an unpacked zip (see `package.sh`), so a machine
+with no network access to GitHub is handed the folder instead.
 
 Non-interactive, and with a port of your choosing:
 
