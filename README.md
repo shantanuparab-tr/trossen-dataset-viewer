@@ -49,6 +49,11 @@ Non-interactive, and with a port of your choosing:
 ./install.sh --datasets ~/converted --mcap ~/raw_mcap --port 3000
 ```
 
+`/mnt` and `/media` are mounted read-only into the container, so a NAS share or
+a USB stick already mounted on the host can be added later from the **Dataset
+folders** panel on the landing page, at the same path the host uses. Override
+with `VIZ_MOUNTS_DIR` / `VIZ_REMOVABLE_DIR` in `.env`.
+
 Other flags: `--native` to skip Docker, `--docker` to require it, `--no-start`
 to set up without launching. Re-running is safe and picks up an edited `.env`.
 

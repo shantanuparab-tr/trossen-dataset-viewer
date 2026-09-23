@@ -10,6 +10,12 @@ services:
       # Read-only on purpose: this tool never writes into a dataset.
       - "${VIZ_DATASETS_DIR:-./datasets}:/data/datasets:ro"
       - "${VIZ_MCAP_DIR:-./mcap}:/data/mcap:ro"
+      # Whatever else is mounted on this machine, at the same path inside the
+      # container, so a NAS share or a USB stick can be added from the Dataset
+      # folders panel without editing this file. Read-only, and the container
+      # only ever looks in a directory someone typed in.
+      - "${VIZ_MOUNTS_DIR:-/mnt}:/mnt:ro"
+      - "${VIZ_REMOVABLE_DIR:-/media}:/media:ro"
       # Transcoded previews, kept between runs so they are built once.
       - viz-cache:/cache
     environment:
