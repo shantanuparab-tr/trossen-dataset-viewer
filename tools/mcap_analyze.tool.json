@@ -1,0 +1,16 @@
+{
+  "id": "mcap-analyze",
+  "name": "MCAP stream timing",
+  "description": "Per-channel message counts, wall-clock span, mean rate and inter-message jitter for a recording.",
+  "target": "mcap",
+  "script": "mcap_analyze.py",
+  "jsonFlag": "--json",
+  "options": [
+    {
+      "flag": "--publish-time",
+      "label": "Use publish time instead of log time",
+      "type": "boolean",
+      "default": false
+    }
+  ]
+}

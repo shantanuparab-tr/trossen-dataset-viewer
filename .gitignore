@@ -1,0 +1,15 @@
+# Build output and dependencies
+node_modules/
+.next/
+out/
+
+# Local configuration: paths to datasets on this machine
+.env
+.env.local
+
+# Transcoded preview clips
+.preview-cache/
+
+# Packaged bundles (package.sh) and incremental build state
+trossen-dataset-viewer-*.zip
+tsconfig.tsbuildinfo

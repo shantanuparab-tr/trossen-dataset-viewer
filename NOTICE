@@ -1,0 +1,11 @@
+Trossen Dataset Viewer
+
+Forked from the Hugging Face Space `lerobot/visualize_dataset`
+(https://huggingface.co/spaces/lerobot/visualize_dataset), which is licensed
+under the Apache License 2.0. The original LeRobot episode viewer is the base of
+the dataset pages in src/app/[org]/[dataset]/.
+
+Everything added since — the local dataset index and file server
+(serve_datasets.py), the MCAP inspector, depth and video previews, the review
+workflow, the validation-tool runner and the Docker packaging — is part of this
+repository and is offered under the same license.

@@ -1,0 +1,22 @@
+{
+  "id": "validate-lerobot-v3",
+  "name": "LeRobot v3 validator",
+  "description": "Structure, counts, timestamp cadence and image/state sync lag for a converted dataset.",
+  "target": "dataset",
+  "script": "validate_lerobot_v3.py",
+  "jsonFlag": "--json",
+  "options": [
+    {
+      "flag": "--sync-episodes",
+      "label": "Episodes sampled for the sync check",
+      "type": "number",
+      "default": 5
+    },
+    {
+      "flag": "--skip-sync",
+      "label": "Skip the sync check (much faster)",
+      "type": "boolean",
+      "default": false
+    }
+  ]
+}

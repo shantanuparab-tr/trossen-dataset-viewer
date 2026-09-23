@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.gitignore
+README.md
+.env*.local
+*.log
+.DS_Store
+.vscode
+.idea
+# Data never belongs in the build context; it is mounted at run time.
+datasets
+mcap
+*.mcap

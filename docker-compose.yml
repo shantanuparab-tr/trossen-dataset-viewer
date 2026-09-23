@@ -1,0 +1,22 @@
+# Copy .env.example to .env, point the three paths at your data, then:
+#   docker compose up -d      and open http://localhost:${VIZ_UI_PORT:-3000}
+services:
+  viz:
+    build: .
+    image: lerobot-dataset-viz:local
+    ports:
+      - "${VIZ_UI_PORT:-3000}:3000"
+    volumes:
+      # Read-only on purpose: this tool never writes into a dataset.
+      - "${VIZ_DATASETS_DIR:-./datasets}:/data/datasets:ro"
+      - "${VIZ_MCAP_DIR:-./mcap}:/data/mcap:ro"
+      # Transcoded previews, kept between runs so they are built once.
+      - viz-cache:/cache
+    environment:
+      # Several dataset trees: mount each and list them here, colon-separated.
+      VIZ_DATASET_ROOTS: "${VIZ_DATASET_ROOTS:-/data/datasets}"
+      VIZ_MCAP_ROOT: "${VIZ_MCAP_ROOT:-/data/mcap}"
+    restart: unless-stopped
+
+volumes:
+  viz-cache:
