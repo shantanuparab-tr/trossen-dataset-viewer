@@ -121,7 +121,7 @@ inlines it into the browser bundle. Without it the page falls back to
 huggingface.co and every request fails with a 401.
 
 `serve_datasets.py` options also read environment variables, which is what the
-container uses: `VIZ_DATASET_ROOTS`, `VIZ_MCAP_ROOT`, `VIZ_DEPTH_CACHE`,
+container uses: `VIZ_DATASET_ROOTS`, `VIZ_MCAP_ROOTS`, `VIZ_DEPTH_CACHE`,
 `VIZ_PORT`, `VIZ_HOST`, `VIZ_NO_DEPTH_PREVIEW`.
 
 ## Using it

@@ -164,9 +164,19 @@ interface RootsResult {
   roots: DatasetRoot[];
 }
 
-export async function listDatasetRoots(): Promise<DatasetRoot[]> {
+/** Which set of folders a roots call acts on. */
+export type RootKind = "datasets" | "mcap";
+
+/** Dataset roots and MCAP roots are the same shape on two endpoints. */
+function rootsEndpoint(kind: RootKind): string {
+  return kind === "mcap" ? "/api/mcap/roots" : "/api/roots";
+}
+
+export async function listRoots(kind: RootKind): Promise<DatasetRoot[]> {
   try {
-    const res = await fetch(`${DATASET_URL}/api/roots`, { cache: "no-store" });
+    const res = await fetch(`${DATASET_URL}${rootsEndpoint(kind)}`, {
+      cache: "no-store",
+    });
     if (!res.ok) return [];
     return ((await res.json()).roots ?? []) as DatasetRoot[];
   } catch {
@@ -174,13 +184,16 @@ export async function listDatasetRoots(): Promise<DatasetRoot[]> {
   }
 }
 
-async function changeRoot(
+export async function changeRoot(
+  kind: RootKind,
   action: "add" | "remove",
   path: string,
 ): Promise<RootsResult> {
   try {
     const res = await fetch(
-      `${DATASET_URL}/api/roots/${action}?path=${encodeURIComponent(path)}`,
+      `${DATASET_URL}${rootsEndpoint(kind)}/${action}?path=${encodeURIComponent(
+        path,
+      )}`,
       { cache: "no-store" },
     );
     if (!res.ok) {
@@ -194,14 +207,6 @@ async function changeRoot(
       roots: [],
     };
   }
-}
-
-export function addDatasetRoot(path: string): Promise<RootsResult> {
-  return changeRoot("add", path);
-}
-
-export function removeDatasetRoot(path: string): Promise<RootsResult> {
-  return changeRoot("remove", path);
 }
 
 /** One robot's joint positions over an episode, as the plots read them. */

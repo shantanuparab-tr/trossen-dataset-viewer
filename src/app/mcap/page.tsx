@@ -21,6 +21,8 @@ import Link from "next/link";
 import { usePathReview } from "@/context/path-review";
 import SyncedVideoGrid from "@/components/synced-video-grid";
 import JointPlots from "@/components/joint-plots";
+import DatasetRoots from "@/components/dataset-roots";
+import { episodeName } from "@/utils/episodeNames";
 import { MetadataValue } from "@/components/json-view";
 import type { Verdict } from "@/context/review-context";
 import {
@@ -251,6 +253,18 @@ export default function McapInspector() {
           Tools →
         </Link>
 
+        <DatasetRoots
+          kind="mcap"
+          onChange={() =>
+            listMcapFiles().then((found) => {
+              setFiles(found);
+              if (found.length > 0 && !dataset) {
+                setDataset(datasetOf(found[0].path));
+              }
+            })
+          }
+        />
+
         <p className="mt-4 text-[10px] uppercase tracking-wide text-slate-500">
           Dataset
         </p>
@@ -306,7 +320,17 @@ export default function McapInspector() {
                 }`}
               >
                 {verdictDot(file.path)}
-                <span className="flex-1 truncate">{episodeOf(file.path)}</span>
+                <span className="flex-1 truncate">
+                  {episodeName(episodeOf(file.path)).label}
+                </span>
+                {episodeName(episodeOf(file.path)).detail && (
+                  <span
+                    className="shrink-0 font-mono text-[10px] text-slate-600"
+                    title={episodeOf(file.path)}
+                  >
+                    {episodeName(episodeOf(file.path)).detail}
+                  </span>
+                )}
                 <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
                   {formatBytes(file.size)}
                 </span>

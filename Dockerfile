@@ -35,7 +35,7 @@ RUN bun run build
 # override away (see .env.example).
 ENV PORT=3000 \
     VIZ_DATASET_ROOTS=/data/datasets \
-    VIZ_MCAP_ROOT=/data/mcap \
+    VIZ_MCAP_ROOTS=/data/mcap \
     VIZ_DEPTH_CACHE=/cache/previews \
     DATA_SERVER_URL=http://127.0.0.1:8080
 

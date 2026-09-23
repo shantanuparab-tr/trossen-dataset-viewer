@@ -21,7 +21,7 @@ services:
     environment:
       # Several dataset trees: mount each and list them here, colon-separated.
       VIZ_DATASET_ROOTS: "${VIZ_DATASET_ROOTS:-/data/datasets}"
-      VIZ_MCAP_ROOT: "${VIZ_MCAP_ROOT:-/data/mcap}"
+      VIZ_MCAP_ROOTS: "${VIZ_MCAP_ROOTS:-/data/mcap}"
     restart: unless-stopped
 
 volumes:

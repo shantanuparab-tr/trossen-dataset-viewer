@@ -1,29 +1,46 @@
 "use client";
 
 /**
- * The directories this server looks in for datasets, and a way to change them
- * without restarting it.
+ * The folders this server reads from, and a way to change them without
+ * restarting it.
  *
- * Datasets live wherever they were put: a NAS mount, a USB stick, a local
- * cache. Retargeting used to mean editing the compose file and restarting, so
- * this panel adds and drops roots live. Roots passed on the command line are
- * shown but not removable, so a shared deployment cannot be emptied from a
- * browser tab.
+ * Data lives wherever it was put: a NAS share, a USB stick, a local cache.
+ * Retargeting used to mean editing the compose file and restarting, so this
+ * panel adds and drops folders live, for LeRobot datasets and for raw MCAP
+ * recordings alike. Folders passed on the command line are shown but not
+ * removable, so a shared deployment cannot be emptied from a browser tab.
  */
 
 import React, { useCallback, useEffect, useState } from "react";
 
 import {
-  addDatasetRoot,
-  listDatasetRoots,
-  removeDatasetRoot,
+  changeRoot,
+  listRoots,
   type DatasetRoot,
+  type RootKind,
 } from "@/utils/versionUtils";
 
+const LABELS: Record<RootKind, { title: string; unit: string; hint: string }> =
+  {
+    datasets: {
+      title: "Dataset folders",
+      unit: "dataset",
+      hint: "/media/usb/converted",
+    },
+    mcap: {
+      title: "MCAP folders",
+      unit: "recording",
+      hint: "/mnt/nas/mcap",
+    },
+  };
+
 export default function DatasetRoots({
+  kind = "datasets",
   onChange,
 }: {
-  /** Called after a root is added or dropped, so the dataset list reloads. */
+  /** Which set of folders to manage. */
+  kind?: RootKind;
+  /** Called after a folder is added or dropped, so listings reload. */
   onChange?: () => void;
 }) {
   const [roots, setRoots] = useState<DatasetRoot[]>([]);
@@ -31,21 +48,16 @@ export default function DatasetRoots({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  const labels = LABELS[kind];
 
   useEffect(() => {
-    listDatasetRoots().then(setRoots);
-  }, []);
+    listRoots(kind).then(setRoots);
+  }, [kind]);
 
   const apply = useCallback(
-    async (
-      action: () => Promise<{
-        ok: boolean;
-        error: string | null;
-        roots: DatasetRoot[];
-      }>,
-    ) => {
+    async (action: "add" | "remove", target: string) => {
       setBusy(true);
-      const result = await action();
+      const result = await changeRoot(kind, action, target);
       setBusy(false);
       setRoots(result.roots);
       setError(result.error);
@@ -54,18 +66,19 @@ export default function DatasetRoots({
         onChange?.();
       }
     },
-    [onChange],
+    [kind, onChange],
   );
 
   const total = roots.reduce((sum, root) => sum + root.datasets, 0);
 
   return (
-    <div className="mt-8 w-full max-w-2xl text-left">
+    <div className="mt-4 w-full max-w-2xl text-left">
       <button
         onClick={() => setOpen((prev) => !prev)}
         className="text-xs uppercase tracking-wide text-white/40 transition-colors hover:text-white/70"
       >
-        {open ? "▾" : "▸"} Dataset folders · {roots.length} · {total} dataset
+        {open ? "▾" : "▸"} {labels.title} · {roots.length} · {total}{" "}
+        {labels.unit}
         {total === 1 ? "" : "s"}
       </button>
 
@@ -90,7 +103,7 @@ export default function DatasetRoots({
                 </span>
               ) : (
                 <button
-                  onClick={() => apply(() => removeDatasetRoot(root.path))}
+                  onClick={() => apply("remove", root.path)}
                   disabled={busy}
                   className="ml-auto rounded border border-white/10 px-2 py-0.5 text-[10px] text-white/50 hover:bg-white/5"
                 >
@@ -104,13 +117,13 @@ export default function DatasetRoots({
             className="flex gap-2 pt-2"
             onSubmit={(event) => {
               event.preventDefault();
-              apply(() => addDatasetRoot(path));
+              apply("add", path);
             }}
           >
             <input
               value={path}
               onChange={(event) => setPath(event.target.value)}
-              placeholder="/media/usb/datasets"
+              placeholder={labels.hint}
               spellCheck={false}
               className="min-w-0 flex-1 rounded border border-white/10 bg-black/30 px-3 py-1.5 font-mono text-xs text-white/80 outline-none focus:border-[var(--accent)]"
             />
@@ -126,8 +139,9 @@ export default function DatasetRoots({
           {error && <p className="text-xs text-amber-300">{error}</p>}
           <p className="text-[10px] leading-relaxed text-white/30">
             Absolute paths, as this server sees them. In Docker that means a
-            path mounted into the container, so a USB stick needs a bind mount
-            (for example <code>-v /media:/media:ro</code>).
+            path mounted into the container: <code>/mnt</code> and{" "}
+            <code>/media</code> are mounted for you, so a NAS share or USB stick
+            already mounted on the host works at the same path.
           </p>
         </div>
       )}

@@ -19,7 +19,8 @@ Two extras on top of plain file serving:
   against a dataset or recording and returns what it printed.
 * `GET /api/roots`, `GET /api/roots/add?path=<abs>` and
   `GET /api/roots/remove?path=<abs>` list and change the directories datasets
-  are served from, without a restart.
+  are served from, without a restart. `/api/mcap/roots{,/add,/remove}` does the
+  same for the folders raw recordings are read from.
 * `GET /api/mcap/joints?path=<rel>` returns each joint stream's decoded
   positions over the episode, strided down for plotting.
 * `GET /api/mcap/preview?path=<rel>&topic=<topic>` returns an H.264 clip of one
@@ -65,7 +66,8 @@ RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 ROOTS = [Path(".")]
 FIXED_ROOTS = []            # the roots given on the command line; never removable
 DEPTH_CACHE = None          # directory for transcoded depth previews, or None
-MCAP_ROOT = None            # directory holding raw .mcap recordings, or None
+MCAP_ROOTS = []             # directories holding raw .mcap recordings
+FIXED_MCAP_ROOTS = []       # the ones given on the command line; never removable
 TOOLS_DIR = Path(__file__).resolve().parent / "tools"
 TOOL_TIMEOUT_S = 1800       # a sync check over a large dataset is minutes, not seconds
 DEPTH_LOCKS_GUARD = threading.Lock()
@@ -127,20 +129,51 @@ def depth_preview(source, start, end):
 
 
 def list_mcap_files():
-    """Every .mcap under MCAP_ROOT, newest first, with its size."""
+    """Every .mcap under the MCAP roots, with its size.
+
+    A recording is named by its path relative to the root it was found under,
+    which is also how it is resolved again, so the first root holding that
+    relative path wins. Give two roots the same internal layout and the second
+    one's copies are shadowed.
+    """
     files = []
-    for path in MCAP_ROOT.rglob("*.mcap"):
-        # macOS resource forks ride along on NAS copies and are not recordings.
-        if path.name.startswith("._") or not path.is_file():
-            continue
-        stat = path.stat()
-        files.append({
-            "path": str(path.relative_to(MCAP_ROOT)),
-            "size": stat.st_size,
-            "modified": int(stat.st_mtime),
-        })
+    seen = set()
+    for root in MCAP_ROOTS:
+        for path in root.rglob("*.mcap"):
+            # macOS resource forks ride along on NAS copies and are not recordings.
+            if path.name.startswith("._") or not path.is_file():
+                continue
+            rel = str(path.relative_to(root))
+            if rel in seen:
+                continue
+            seen.add(rel)
+            stat = path.stat()
+            files.append({
+                "path": rel,
+                "size": stat.st_size,
+                "modified": int(stat.st_mtime),
+            })
     files.sort(key=lambda f: f["path"])
     return files
+
+
+def resolve_mcap(rel):
+    """Map a recording's relative path back onto a file under one of the roots."""
+    if not rel:
+        return None
+    for root in MCAP_ROOTS:
+        target = (root / rel).resolve()
+        if str(target).startswith(str(root)) and target.is_file():
+            return target
+    return None
+
+
+def mcap_root_of(path):
+    """The MCAP root a resolved recording sits under, or None."""
+    for root in MCAP_ROOTS:
+        if str(path).startswith(str(root)):
+            return root
+    return None
 
 
 def mcap_summary(path):
@@ -220,7 +253,7 @@ def mcap_summary(path):
         rows.sort(key=lambda r: r["topic"])
 
         return {
-            "path": str(path.relative_to(MCAP_ROOT)),
+            "path": str(path.relative_to(mcap_root_of(path) or path.parent)),
             "size": path.stat().st_size,
             "profile": header.profile,
             "library": header.library,
@@ -472,11 +505,7 @@ def resolve_target(kind, rel):
     path, and nothing outside the roots can be reached.
     """
     if kind == "mcap":
-        if MCAP_ROOT is None or not rel:
-            return None
-        target = (MCAP_ROOT / rel).resolve()
-        return target if str(target).startswith(str(MCAP_ROOT)) and (
-            target.exists()) else None
+        return resolve_mcap(rel)
 
     for root in ROOTS:
         target = (root / rel).resolve()
@@ -546,20 +575,90 @@ def load_extra_roots():
         saved = json.loads(EXTRA_ROOTS_FILE.read_text())
     except (OSError, ValueError):
         return
-    for entry in saved:
+    # A bare list is the older format, which only held dataset roots.
+    if isinstance(saved, list):
+        saved = {"datasets": saved, "mcap": []}
+    for entry in saved.get("datasets", []):
         path = Path(entry).expanduser()
         if path.is_dir() and path not in ROOTS:
             ROOTS.append(path)
+    for entry in saved.get("mcap", []):
+        path = Path(entry).expanduser()
+        if path.is_dir() and path not in MCAP_ROOTS:
+            MCAP_ROOTS.append(path)
 
 
-def save_extra_roots(paths):
+def save_extra_roots():
     """Record the UI-added roots, ignoring a read-only or missing cache dir."""
     if EXTRA_ROOTS_FILE is None:
         return
+    payload = {
+        "datasets": [str(r) for r in ROOTS if r not in FIXED_ROOTS],
+        "mcap": [str(r) for r in MCAP_ROOTS if r not in FIXED_MCAP_ROOTS],
+    }
     try:
-        EXTRA_ROOTS_FILE.write_text(json.dumps([str(p) for p in paths]))
+        EXTRA_ROOTS_FILE.write_text(json.dumps(payload))
     except OSError as exc:
         print("could not save roots: %s" % exc)
+
+
+def check_root(raw):
+    """Validate a path typed into the roots panel.
+
+    Returns (path, None) when it can be served, or (None, message). A path the
+    process cannot see is the common case in a container, where only mounted
+    directories exist, so it is reported as such rather than as "not found".
+    """
+    if not raw.strip():
+        return None, "no path given"
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        return None, "path must be absolute: %s" % path
+    path = path.resolve()
+    if not path.is_dir():
+        return None, ("not a directory inside this server: %s "
+                      "(in Docker, only mounted paths exist)" % path)
+    return path, None
+
+
+def mcap_root_entries():
+    """Every MCAP root, with how many recordings it holds, for the panel."""
+    return [
+        {
+            "path": str(root),
+            "exists": root.is_dir(),
+            "datasets": sum(1 for p in root.rglob("*.mcap")
+                            if not p.name.startswith("._")),
+            "fixed": root in FIXED_MCAP_ROOTS,
+        }
+        for root in MCAP_ROOTS
+    ]
+
+
+def add_mcap_root(raw):
+    """Inspect recordings under another directory as well."""
+    path, error = check_root(raw)
+    if error:
+        return error
+    if path not in MCAP_ROOTS:
+        MCAP_ROOTS.append(path)
+        save_extra_roots()
+    return None
+
+
+def remove_mcap_root(raw):
+    """Stop inspecting a UI-added MCAP root."""
+    try:
+        path = Path(raw).expanduser().resolve()
+    except OSError:
+        return "not a path: %s" % raw
+    if path in FIXED_MCAP_ROOTS:
+        return "%s was passed on the command line; it cannot be removed here" % path
+    if path not in MCAP_ROOTS:
+        return "not a root: %s" % path
+    MCAP_ROOTS.remove(path)
+    save_extra_roots()
+    return None
 
 
 def root_entries():
@@ -576,25 +675,13 @@ def root_entries():
 
 
 def add_root(raw):
-    """Serve datasets from another directory as well.
-
-    Returns an error string, or None when the root was added. A path the
-    process cannot see is the common case in a container, where only mounted
-    directories exist, so it is reported as such rather than as "not found".
-    """
-    if not raw.strip():
-        return "no path given"
-    path = Path(raw).expanduser()
-    if not path.is_absolute():
-        return "path must be absolute: %s" % path
-    path = path.resolve()
-    if not path.is_dir():
-        return ("not a directory inside this server: %s "
-                "(in Docker, only mounted paths exist)" % path)
-    if path in ROOTS:
-        return None
-    ROOTS.append(path)
-    save_extra_roots([r for r in ROOTS if r not in FIXED_ROOTS])
+    """Serve datasets from another directory as well."""
+    path, error = check_root(raw)
+    if error:
+        return error
+    if path not in ROOTS:
+        ROOTS.append(path)
+        save_extra_roots()
     return None
 
 
@@ -610,7 +697,7 @@ def remove_root(raw):
     if path not in ROOTS:
         return "not a root: %s" % path
     ROOTS.remove(path)
-    save_extra_roots([r for r in ROOTS if r not in FIXED_ROOTS])
+    save_extra_roots()
     return None
 
 
@@ -776,8 +863,25 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route.startswith("/api/mcap"):
-            if MCAP_ROOT is None:
-                self.send_json({"error": "no --mcap-root configured"})
+            # The roots routes answer before the "any roots at all" check, so a
+            # server started without one can still be pointed at recordings.
+            if route == "/api/mcap/roots":
+                self.send_json({"roots": mcap_root_entries()})
+                return
+
+            if route in ("/api/mcap/roots/add", "/api/mcap/roots/remove"):
+                query = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(self.path).query
+                )
+                raw = (query.get("path") or [""])[0]
+                error = (add_mcap_root if route.endswith("/add")
+                         else remove_mcap_root)(raw)
+                self.send_json({"ok": error is None, "error": error,
+                                "roots": mcap_root_entries()})
+                return
+
+            if not MCAP_ROOTS:
+                self.send_json({"error": "no MCAP folder configured"})
                 return
             if route == "/api/mcap":
                 self.send_json(list_mcap_files())
@@ -788,10 +892,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 rel = (query.get("path") or [""])[0]
                 topic = (query.get("topic") or [""])[0]
-                source = (MCAP_ROOT / rel).resolve()
-                if not str(source).startswith(str(MCAP_ROOT)) or (
-                    not source.is_file()
-                ) or not topic or DEPTH_CACHE is None:
+                source = resolve_mcap(rel)
+                if source is None or not topic or DEPTH_CACHE is None:
                     self.send_response(404)
                     self.send_header("Content-Length", "0")
                     self.send_header("Access-Control-Allow-Origin", "*")
@@ -821,10 +923,8 @@ class Handler(BaseHTTPRequestHandler):
                     urllib.parse.urlparse(self.path).query
                 )
                 rel = (query.get("path") or [""])[0]
-                target = (MCAP_ROOT / rel).resolve()
-                if not str(target).startswith(str(MCAP_ROOT)) or (
-                    not target.is_file()
-                ):
+                target = resolve_mcap(rel)
+                if target is None:
                     self.send_json({"error": "no such recording: %s" % rel})
                     return
                 try:
@@ -838,10 +938,8 @@ class Handler(BaseHTTPRequestHandler):
                     urllib.parse.urlparse(self.path).query
                 )
                 rel = (query.get("path") or [""])[0]
-                target = (MCAP_ROOT / rel).resolve()
-                if not str(target).startswith(str(MCAP_ROOT)) or (
-                    not target.is_file()
-                ):
+                target = resolve_mcap(rel)
+                if target is None:
                     self.send_json({"error": "no such recording: %s" % rel})
                     return
                 try:
@@ -976,10 +1074,12 @@ def main():
                         Path.home() / ".cache" / "lerobot_depth_preview")),
                     help="where transcoded 8-bit previews are kept "
                          "(env VIZ_DEPTH_CACHE)")
-    ap.add_argument("--mcap-root", type=Path,
-                    default=(env_paths("VIZ_MCAP_ROOT") or [None])[0],
-                    help="directory of raw .mcap recordings to inspect "
-                         "(env VIZ_MCAP_ROOT)")
+    ap.add_argument("--mcap-root", type=Path, action="append",
+                    default=(env_paths("VIZ_MCAP_ROOTS")
+                             or env_paths("VIZ_MCAP_ROOT") or None),
+                    help="directory of raw .mcap recordings to inspect; repeat "
+                         "for several (env VIZ_MCAP_ROOTS, %s-separated)"
+                         % os.pathsep)
     ap.add_argument("--no-depth-preview", action="store_true",
                     default=bool(os.environ.get("VIZ_NO_DEPTH_PREVIEW")),
                     help="serve depth streams as stored (browsers show them empty)")
@@ -1004,13 +1104,14 @@ def main():
     if args.verbose:
         os.environ["SERVE_FLAGS"] = "--verbose"
 
-    global MCAP_ROOT
-    if args.mcap_root:
-        candidate = args.mcap_root.expanduser().resolve()
+    global MCAP_ROOTS, FIXED_MCAP_ROOTS
+    for root in args.mcap_root or []:
+        candidate = root.expanduser().resolve()
         if candidate.is_dir():
-            MCAP_ROOT = candidate
+            MCAP_ROOTS.append(candidate)
         else:
             print("skipping mcap root (not a directory): %s" % candidate)
+    FIXED_MCAP_ROOTS = list(MCAP_ROOTS)
 
     global DEPTH_CACHE
     if not args.no_depth_preview:
@@ -1025,7 +1126,8 @@ def main():
     print("serving %s on http://%s:%d"
           % (", ".join(str(r) for r in ROOTS), args.host, args.port))
     print("depth previews: %s" % (DEPTH_CACHE or "disabled"))
-    print("mcap root: %s" % (MCAP_ROOT or "disabled"))
+    print("mcap roots: %s"
+          % (", ".join(str(r) for r in MCAP_ROOTS) or "disabled"))
     print("%d dataset(s):" % len(datasets))
     for d in datasets:
         print("  %s" % d)
